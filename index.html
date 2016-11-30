@@ -1,0 +1,403 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+    <link rel="stylesheet" href="http://cdn.webix.com/edge/webix.css" type="text/css">
+    <script src="http://cdn.webix.com/edge/webix.js" type="text/javascript"></script>
+    <script src="underscore-min.js"></script>
+</head>
+<body onload="init()">
+    <div id="simulation_window">
+        <canvas id="simulation_canvas" width="900" height="500">
+            Your browser does not support the HTML5 canvas tag.</canvas>
+    </div>
+    <script src="ui.js" type="text/javascript"></script>
+    <script>
+        function Shape(x, y, w, h, fill) {
+            this.x = x || 0;
+            this.y = y || 0;
+            this.w = w || 1;
+            this.h = h || 1;
+            this.fill = fill || '#AAAAAA';
+        }
+
+        Shape.prototype.draw = function(ctx) {
+            ctx.fillStyle = this.fill;
+
+            if (this instanceof Window) {
+                ctx.globalAlpha = 0.3;
+                ctx.strokeStyle = "#000000";
+                ctx.lineWidth = 1;
+                ctx.fillRect(this.x, this.y+packetHeightPlusPadding*canvas.base, this.w, this.h);
+                ctx.strokeRect(this.x, this.y+packetHeightPlusPadding*canvas.base, this.w, this.h);
+                ctx.globalAlpha = 1;
+            } else {
+                ctx.fillRect(this.x, this.y, this.w, this.h);
+            }
+
+            if (this instanceof Sender || this instanceof  Receiver) {
+                ctx.strokeStyle = "#000000";
+                ctx.lineWidth = 1;
+                ctx.strokeRect(this.x, this.y, this.w, this.h);
+            } else if (this instanceof Window) {
+
+            }
+        }
+
+        Shape.prototype.contains = function(mx, my) {
+            return  (this.x <= mx) && (this.x + this.w >= mx) &&
+                (this.y <= my) && (this.y + this.h >= my);
+        }
+
+        Shape.prototype.setX = function(x) {
+            this.x = x;
+        }
+
+        Shape.prototype.setY = function(y) {
+            this.y = y;
+        }
+
+        Shape.prototype.setW = function(w) {
+            this.w = w;
+        }
+
+        Shape.prototype.setH = function(h) {
+            this.h = h;
+        }
+
+        Shape.prototype.setFill = function(fill) {
+            this.fill = fill;
+        }
+
+        function CanvasState(canvas) {
+            this.canvas = canvas;
+            this.width = canvas.width;
+            this.height = canvas.height;
+            this.ctx = canvas.getContext('2d');
+
+            var stylePaddingLeft, stylePaddingTop, styleBorderLeft, styleBorderTop;
+            if (document.defaultView && document.defaultView.getComputedStyle) {
+                this.stylePaddingLeft = parseInt(document.defaultView.getComputedStyle(canvas, null)['paddingLeft'], 10)      || 0;
+                this.stylePaddingTop  = parseInt(document.defaultView.getComputedStyle(canvas, null)['paddingTop'], 10)       || 0;
+                this.styleBorderLeft  = parseInt(document.defaultView.getComputedStyle(canvas, null)['borderLeftWidth'], 10)  || 0;
+                this.styleBorderTop   = parseInt(document.defaultView.getComputedStyle(canvas, null)['borderTopWidth'], 10)   || 0;
+            }
+
+            var html = document.body.parentNode;
+            this.htmlTop = html.offsetTop;
+            this.htmlLeft = html.offsetLeft;
+            this.speed = chosenSpeed
+            this.shapes = [];
+            this.senders = [];
+            this.receivers = [];
+            this.valid = false;
+            this.base = 0;
+            this.nextSequenceNumber = 0;
+            this.currentIndex = 0;
+            this.missingAck = false;
+            this.countdown = function() {return 0;};
+
+            var myState = this;
+
+            canvas.addEventListener('mousedown', function(e) {
+                var rect = canvas.getBoundingClientRect();
+                var mx = event.clientX - rect.left;
+                var my = event.clientY - rect.top;
+                console.log("x: " + mx + " y: " + my);
+
+                var shapes = myState.shapes;
+                var l = shapes.length;
+                for (var i = l-1; i >= 0; i--) {
+                    if (shapes[i].contains(mx, my)) {
+                        if (shapes[i] instanceof Sender || shapes[i] instanceof Receiver)
+                        {
+                            continue;
+                        }
+                        myState.removeShape(shapes[i], true);
+                        return;
+                    }
+                }
+            }, true);
+
+            this.interval = 30;
+            this.intervalID = setInterval(function() { myState.update(); }, myState.interval);
+        }
+
+        CanvasState.prototype.addShape = function(shape) {
+            this.shapes.push(shape);
+            this.valid = false;
+        }
+
+        CanvasState.prototype.removeShape = function(shape, killed) {
+            var wasKilled =  killed;
+
+            if (shape instanceof Packet) {
+                clearInterval(shape.timerID);
+                if (!wasKilled && !this.missingAck) {
+                    this.base++;
+                }
+                this.shapes = _.without(this.shapes, shape);
+            } else {
+                this.shapes = _.without(this.shapes, shape);
+                this.base++;
+            }
+        }
+
+        CanvasState.prototype.clear = function() {
+            this.ctx.clearRect(0, 0, this.width, this.height);
+        }
+
+        CanvasState.prototype.update = function() {
+            if (!this.valid || this.missingAck) {
+                var ctx = this.ctx;
+                var packetsFound = [];
+                var shapes = this.shapes;
+                this.clear();
+
+                ctx.font = "24px serif";
+                ctx.fillStyle = "#000000";
+                ctx.fillText("Senders", sendersStartingX-packetWidth+packetHeight, startingY-5);
+                ctx.fillText("Receivers", receiversStartingX-packetWidth+packetHeight, startingY-5);
+
+                var baseText = "Base = " + this.base;
+                var nextSequence = "Next Sequence = " + this.nextSequenceNumber;
+                var baseTextMeasurement = ctx.measureText(baseText);
+                var nextSequenceTextMeasurement = ctx.measureText(nextSequence);
+
+                ctx.fillText(baseText, receiversStartingX+(packetWidth*2.5), startingY);
+                ctx.fillText(nextSequence, receiversStartingX+(packetWidth*2.5), startingY+30);
+                ctx.strokeRect(receiversStartingX+(packetWidth*2.5), startingY-30,
+                    nextSequenceTextMeasurement.width, 70);
+
+                if (this.missingAck && this.countdown() > 0) {
+                    ctx.fillText("Timeout: " + this.countdown()/1000, receiversStartingX+(packetWidth*2.5), startingY+140);
+                    ctx.strokeRect(receiversStartingX+(packetWidth*2.5), startingY-30,
+                        nextSequenceTextMeasurement.width, 70);
+                } else if (this.missingAck && this.countdown() < 0) {
+                    this.missingAck = false;
+
+                    var j = 0;
+                    var len = shapes.length;
+                    for (; j < len; j++) {
+                        if (shapes[j] instanceof Packet) {
+                            this.removeShape(shapes[j], true);
+                        }
+                    }
+
+                    for (j = this.base; j < this.nextSequenceNumber; j++) {
+                        var newPacket = new Packet(sendersStartingX+packetWidth+10, startingY+(j*packetHeightPlusPadding),
+                            packetWidth, packetHeight);
+                        newPacket.on_way = true;
+                        canvas.addShape(newPacket);
+                        newPacket.sendToReceiver();
+                        this.valid = false;
+                    }
+                }
+
+                // draw all shapes
+                var l = shapes.length;
+                for (var i = 0; i < l; i++) {
+                    var shape = shapes[i];
+                    // We can skip the drawing of elements that have moved off the screen:
+                    if (shape.x > this.width || shape.y > this.height ||
+                        shape.x + shape.w < 0 || shape.y + shape.h < 0) continue;
+                    shapes[i].draw(ctx);
+
+                    if (shapes[i] instanceof Packet) {
+                        packetsFound.push(shapes[i])
+                    }
+                }
+
+                if (_.isEmpty(packetsFound)) {
+                    this.valid = true;
+                } else {
+                    this.detectCollision(packetsFound);
+                }
+
+                if (packetsFound.length >= windowSize || this.nextSequenceNumber == numberOfPacketsTotal) {
+                    $$("sendNewButton").disable();
+                } else if (!this.missingAck && packetsFound.length < windowSize && this.base < numberOfPacketsTotal) {
+                    $$("sendNewButton").enable();
+                }
+            }
+        }
+
+        CanvasState.prototype.detectCollision = function(packets) {
+            var packetNum = packets.length;
+            var shapesNum = this.shapes.length;
+            var collisionFound = false;
+
+            for(var i = 0; i < packetNum; i++) {
+                for (var j = 0; j < shapesNum; j++) {
+                    if (packets[i].x < this.shapes[j].x + this.shapes[j].w  && packets[i].x + packets[i].w  > this.shapes[j].x &&
+                        packets[i].y < this.shapes[j].y + this.shapes[j].h && packets[i].y + packets[i].h > this.shapes[j].y) {
+                        if (this.shapes[j] instanceof Window || this.shapes[j] == packets[i]) {
+                            continue;
+                        } else if (packets[i].reached_destination == false) {
+                            if (j != 1 && j != 15 && !this.missingAck && this.shapes[j-1].acknowledged != true) {
+                                this.missingAck = true;
+                                this.countdown = this.createCountdown(timeout);
+                            } else {
+                                if(!this.missingAck){
+                                    packets[i].reached_destination = true;
+                                    packets[i].fill = "#FFFF00";
+                                    packets[i].x = packets[i].x - 3;
+                                    packets[i].sendBackToSender();
+                                    this.shapes[j].fill = "#0000FF";
+                                    this.shapes[j].acknowledged = true;
+                                } else {
+                                    this.shapes[j].acknowledged = true;
+                                    this.shapes[j].fill = "#0000FF";
+                                    this.removeShape(packets[i], true);
+                                }
+                            }
+                        } else {
+                            packets[i].acknowledged = true;
+                            this.removeShape(packets[i], false);
+                            this.shapes[j].fill = "#FFFF00";
+                            break;
+                        }
+                        collisionFound = true;
+                    }
+                }
+            }
+
+            return collisionFound;
+        }
+
+        CanvasState.prototype.createCountdown = function(timeRemaining) {
+            var startTime = Date.now();
+            return function() {
+                return timeRemaining - ( Date.now() - startTime );
+            }
+        }
+
+        CanvasState.prototype.sendNewPacket = function() {
+            var newPacket = new Packet(sendersStartingX+packetWidth+10, startingY+(this.nextSequenceNumber*packetHeightPlusPadding),
+                packetWidth, packetHeight);
+            newPacket.on_way = true;
+            canvas.addShape(newPacket);
+            newPacket.sendToReceiver();
+            this.valid = false;
+            this.nextSequenceNumber++;
+        }
+
+        function Sender(x, y, w, h, fill) {
+            Shape.call(this, x, y, w, h, fill || "#fff");
+
+            this.acknowledged = false;
+        }
+
+        Sender.prototype = Object.create(Shape.prototype);
+        Sender.prototype.constructor = Sender;
+
+        function Receiver(x, y, w, h, fill) {
+            Shape.call(this, x, y, w, h, fill || "#fff");
+
+            this.on_way = false;
+        }
+
+        Receiver.prototype = Object.create(Shape.prototype);
+        Receiver.prototype.constructor = Receiver;
+
+        function Packet(x, y, w, h, fill) {
+            Shape.call(this, x, y, w, h, fill || "#ff0000");
+
+            this.reached_destination = false;
+            this.acknowledged = false;
+            //this.packet_acknowledge = true;
+            //this.packet_pos = 0;
+            this.timerID = 0;
+        }
+
+        Packet.prototype = Object.create(Shape.prototype);
+        Packet.prototype.constructor = Packet;
+
+        Packet.prototype.sendToReceiver = function() {
+            var packet = this;
+            packet.timerID = setInterval(function(){packet.setX(packet.x+canvas.speed);}, 30);
+        }
+
+        Packet.prototype.sendBackToSender = function() {
+            var packet = this;
+            clearInterval(packet.timerID);
+            packet.timerID = setInterval(function(){packet.setX(packet.x-canvas.speed);}, 30);
+        }
+
+        function Window(x, y, w, h, fill) {
+            Shape.call(this, x, y, w, h*$$("windowSize").getValue(), fill);
+
+            this.size = $$("windowSize").getValue();
+        }
+
+        Window.prototype = Object.create(Shape.prototype);
+        Window.prototype.constructor = Window;
+
+        var canvas;
+        var windowSize;
+        var timeout;
+        var chosenSpeed;
+        const numberOfPacketsTotal = 14;
+        const startingY = 30;
+        const sendersStartingX = 80;
+        const receiversStartingX = 550;
+        const packetWidth = 50;
+        const packetHeight = 30;
+        const packetHeightPlusPadding = 33;
+
+        function init() {
+            canvas = new CanvasState(document.getElementById("simulation_canvas"));
+            initPackets();
+            ResetCanvasOnClick();
+        }
+
+        function SendNewOnClick() {
+            canvas.sendNewPacket();
+        }
+
+        function ResetCanvasOnClick() {
+            $$("sendNewButton").enable();
+
+            canvas.clear();
+
+            canvas.shapes = [];
+            canvas.speed = chosenSpeed;
+            canvas.shapes = [];
+            canvas.senders = [];
+            canvas.receivers = [];
+            canvas.valid = false; // when set to false, the canvas will redraw everything
+            canvas.base = 0;
+            canvas.nextSequenceNumber = 0;
+            canvas.currentIndex = 0;
+            canvas.missingAck = false;
+            this.countdown = function() {return 0;};
+
+            initPackets();
+        }
+
+        function initPackets() {
+            windowSize = $$("windowSize").getValue();
+            timeout = $$("timeout").getValue()*1000;
+            chosenSpeed = parseFloat($$("speed").getValue());
+
+            canvas.addShape(new Window(sendersStartingX-packetWidth+packetHeight,
+                startingY-2, packetWidth*2, packetHeightPlusPadding, "#D3D3D3"));
+
+            for (var y = startingY; y < packetHeightPlusPadding*numberOfPacketsTotal+startingY; y = y + packetHeightPlusPadding)
+            {
+                var sender = new Sender(sendersStartingX, y, packetWidth, packetHeight, "#fff");
+                canvas.senders.push(sender);
+                canvas.addShape(sender);
+            }
+
+            for (y = startingY; y < packetHeightPlusPadding*numberOfPacketsTotal+startingY; y = y + packetHeightPlusPadding)
+            {
+                var receiver = new Receiver(receiversStartingX, y, packetWidth, packetHeight, "#fff");
+                canvas.receivers.push(receiver);
+                canvas.addShape(receiver);
+            }
+        }
+
+    </script>
+
+</body>
+</html>
